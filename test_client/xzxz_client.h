@@ -35,10 +35,18 @@ private:
 template <typename ReplyType>
 class AsyncClientCallBaseWithType : public AsyncClientCallBase {
 public:
-  virtual const ReplyType &GetReplyConstRef() = 0;
-  virtual void GetReplyMove(ReplyType &) = 0;
+  const ReplyType &GetReplyConstRef() { return rep_.reply; }
+  void GetReplyMove(ReplyType &r) { r = std::move(rep_.reply); }
+  grpc::Status *GetStatus() { return &rep_.status; }
 
-  virtual grpc::Status *GetStatus() = 0;
+  struct AsyncClientCallContextData {
+    ReplyType reply;
+    grpc::ClientContext context;
+    grpc::Status status;
+    std::unique_ptr<grpc::ClientAsyncResponseReader<ReplyType>> response_reader;
+    void (*call_back_fn)(void *) = nullptr;
+    void *call_back_arg = nullptr;
+  } rep_;
 };
 
 template <typename ServiceType> class XzxzClient final {
@@ -99,17 +107,13 @@ public:
     class AsyncClientCall : public AsyncClientCallBaseWithType<ReplyType> {
     public:
       void CallBack() override {
-        if (rep_.call_back_fn != nullptr) {
-          (*rep_.call_back_fn)(rep_.call_back_arg);
+        if (AsyncClientCallBaseWithType<ReplyType>::rep_.call_back_fn !=
+            nullptr) {
+          (*AsyncClientCallBaseWithType<ReplyType>::rep_.call_back_fn)(
+              AsyncClientCallBaseWithType<ReplyType>::rep_.call_back_arg);
         }
         AsyncClientCallBase::Done();
       }
-
-      const ReplyType &GetReplyConstRef() override { return rep_.reply; }
-
-      void GetReplyMove(ReplyType &r) override { r = std::move(rep_.reply); }
-
-      grpc::Status *GetStatus() override { return &rep_.status; }
 
       AsyncClientCall(void (*call_back_fn)(void *), void *call_back_arg,
                       const RequestType &request,
@@ -118,24 +122,22 @@ public:
                       std::vector<std::shared_ptr<grpc::CompletionQueue>>
                           &completion_queues_) {
         auto current_which_cq = which_cq_++ % completion_queues_.size();
-        rep_.call_back_fn = call_back_fn;
-        rep_.call_back_arg = call_back_arg;
-        rep_.response_reader = (stub->*call_fn)(
-            &rep_.context, request, completion_queues_[current_which_cq].get());
-        rep_.response_reader->StartCall();
-        rep_.response_reader->Finish(&rep_.reply, &rep_.status, this);
+        AsyncClientCallBaseWithType<ReplyType>::rep_.call_back_fn =
+            call_back_fn;
+        AsyncClientCallBaseWithType<ReplyType>::rep_.call_back_arg =
+            call_back_arg;
+        AsyncClientCallBaseWithType<ReplyType>::rep_.response_reader =
+            (stub->*call_fn)(
+                &AsyncClientCallBaseWithType<ReplyType>::rep_.context, request,
+                completion_queues_[current_which_cq].get());
+        AsyncClientCallBaseWithType<ReplyType>::rep_.response_reader
+            ->StartCall();
+        AsyncClientCallBaseWithType<ReplyType>::rep_.response_reader->Finish(
+            &AsyncClientCallBaseWithType<ReplyType>::rep_.reply,
+            &AsyncClientCallBaseWithType<ReplyType>::rep_.status, this);
       }
 
     private:
-      struct AsyncClientCallContextData {
-        ReplyType reply;
-        grpc::ClientContext context;
-        grpc::Status status;
-        std::unique_ptr<grpc::ClientAsyncResponseReader<ReplyType>>
-            response_reader;
-        void (*call_back_fn)(void *) = nullptr;
-        void *call_back_arg = nullptr;
-      } rep_;
     };
 
     return std::make_unique<AsyncClientCall>(call_back_fn, call_back_arg,
